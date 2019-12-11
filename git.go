@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 
 	"github.com/pkg/errors"
@@ -60,6 +61,10 @@ func shortenRef(ref string) string {
 		return ref
 	}
 	shortRef := ref[:7]
+	if _, err := strconv.ParseUint(shortRef, 16, 64); err != nil {
+		// Not a SHA.
+		return ref
+	}
 	if ok, err := checkValidRef(shortRef); ok && err == nil {
 		return shortRef
 	}

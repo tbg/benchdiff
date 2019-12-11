@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"io"
 	"sync"
 	"time"
@@ -69,5 +70,6 @@ func (s *Spinner) Stop() {
 // Fraction is a utility funcation that formats a fraction string, given a
 // numerator and a denominator.
 func Fraction(n, d int) string {
-	return fmt.Sprintf("%d/%d", n, d)
+	dWidth := strconv.Itoa(len(strconv.Itoa(d)))
+	return fmt.Sprintf("%"+dWidth+"d/%d", n, d)
 }

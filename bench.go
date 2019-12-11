@@ -25,7 +25,7 @@ func expandPackages(pkgFilter []string) ([]string, error) {
 // testDir returns the directory to store cmpbench artifacts and binaries for
 // specified git ref.
 func testDir(ref string) string {
-	return "cmpbench." + ref
+	return filepath.Join("cmpbench", ref)
 }
 
 // testArtifactsDir returns the directory to store cmpbench artifacts for
@@ -46,7 +46,7 @@ func hash(s []string) string {
 // testArtifactsDir returns the directory to store cmpbench binaries for
 // specified git ref.
 func testBinDir(ref string, pkgFilter []string) string {
-	return filepath.Join(testDir(ref), "bin."+hash(pkgFilter))
+	return filepath.Join(testDir(ref), "bin", hash(pkgFilter))
 }
 
 // pkgToTestBin translates a Go package name into a test binary name.

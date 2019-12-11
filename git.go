@@ -66,7 +66,15 @@ func shortenRef(ref string) string {
 	return ref
 }
 
-// checkoutRef switches branches to the specified ref.
-func checkoutRef(ref string) error {
-	return errors.Wrap(spawn("git", "checkout", "-q", ref), "checkout ref")
+// checkoutRef switches branches to the specified ref. If a post-checkout
+// command is provided, it is run after checking out the ref.
+func checkoutRef(ref string, postCheckout string) error {
+	if err := spawn("git", "checkout", "-q", ref); err != nil {
+		return errors.Wrap(err, "checkout ref")
+	}
+	if postCheckout == "" {
+		return nil
+	}
+	args := strings.Split(postCheckout, " ")
+	return errors.Wrap(spawn(args...), "post-checkout")
 }

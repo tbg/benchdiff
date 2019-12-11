@@ -12,6 +12,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/nvanbenschoten/cmpbench/google"
 	"github.com/nvanbenschoten/cmpbench/ui"
 	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
@@ -23,16 +24,43 @@ const usage = `usage: cmpbench [--old <commit>] [--new <commit>] <pkgs>...`
 const helpString = `cmpbench automates the process of running and comparing Go microbenchmarks
 across code changes.
 
+cmpbench runs all microbenchmarks in the specified packages against the old and
+new commit. It then passes the benchmark output through benchstat to compute
+statistics about the results.
+
+By default, cmpbench outputs these results in a textual format. However, if the
+--sheets flag is passed then it will upload the result to a Google Sheets
+spreadsheet. To access this, users must have a Google service account. For
+information, see https://cloud.google.com/iam/docs/service-accounts.
+
+The Google service account must meet the following conditions:
+1. The Google Sheets API must be enabled for the account's project
+2. The Google Drive  API must be enabled for the account's project
+
+When the --sheets flag is passed, cmpbench will search for a credentials file
+containing the service account key using the GOOGLE_APPLICATION_CREDENTIALS
+environment variable. See https://cloud.google.com/docs/authentication/production.
+
 Options:
-  -n, --new   <commit> measure the difference between this commit and old (default HEAD)
-  -o, --old   <commit> measure the difference between this commit and new (default new~)
-  -c, --count <n>      run tests and benchmarks n times (default 1)
-      --help           display this help
+  -n, --new    <commit> measure the difference between this commit and old (default HEAD)
+  -o, --old    <commit> measure the difference between this commit and new (default new~)
+  -c, --count  <n>      run tests and benchmarks n times (default 1)
+	  --post-checkout   an optional command to run after checking out each branch
+	                    to configure the git repo so that 'go build' succeeds
+      --sheets          output the results to a new Google sheets document
+      --help            display this help
 
 Example invocations:
-  $ cmpbench ./pkg/...
+  $ cmpbench --sheets ./pkg/...
   $ cmpbench --old=master~ --new=master ./pkg/kv ./pkg/storage/...
-  $ cmpbench --new=d1fbdb2 --count=2 ./pkg/sql/...`
+  $ cmpbench --new=d1fbdb2 --count=2 ./pkg/sql/...
+  $ cmpbench --new=6299bd4 --sheets --post-checkout='make buildshort' ./pkg/workload/...`
+
+// TODO: it's unclear whether G Suite Domain-wide Delegation is required for the
+// Google service account. If it is, add the following requirement to the help
+// text above.
+//   3. G Suite Domain-wide Delegation must be enabled. See
+//    https://developers.google.com/identity/protocols/OAuth2ServiceAccount#delegatingauthority.
 
 func main() {
 	if err := run(context.Background()); err != nil {
@@ -42,14 +70,16 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	var help bool
-	var oldRef, newRef string
+	var help, useSheets bool
+	var oldRef, newRef, postChck string
 	var itersPerTest int
 
 	pflag.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
 	pflag.BoolVarP(&help, "help", "h", false, "")
+	pflag.BoolVarP(&useSheets, "sheets", "", false, "")
 	pflag.StringVarP(&oldRef, "old", "o", "", "")
 	pflag.StringVarP(&newRef, "new", "n", "", "")
+	pflag.StringVarP(&postChck, "post-checkout", "", "", "")
 	pflag.IntVarP(&itersPerTest, "count", "c", 10, "")
 	pflag.Parse()
 	prArgs := pflag.Args()
@@ -70,12 +100,20 @@ func run(ctx context.Context) error {
 		return err
 	}
 
+	var srv *google.Service
+	if useSheets {
+		srv, err = google.New(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
 	// Build the benchmark suites.
 	oldSuite := makeBenchSuite(oldRef)
 	newSuite := makeBenchSuite(newRef)
 	defer oldSuite.close()
 	defer newSuite.close()
-	if err := buildBenches(ctx, pkgFilter, &oldSuite, &newSuite); err != nil {
+	if err := buildBenches(ctx, pkgFilter, postChck, &oldSuite, &newSuite); err != nil {
 		return err
 	}
 
@@ -87,8 +125,7 @@ func run(ctx context.Context) error {
 	}
 
 	// Process the benchmark output.
-	processBenchOutput(ctx, &oldSuite, &newSuite)
-	return nil
+	return processBenchOutput(ctx, &oldSuite, &newSuite, srv)
 }
 
 func runHelp(ctx context.Context) error {
@@ -101,9 +138,6 @@ func runHelp(ctx context.Context) error {
 func parseGitRefs(oldRef, newRef string) (string, string, error) {
 	var err error
 	if newRef == "" {
-		if oldRef != "" {
-			return "", "", errors.New("if --old is provided, --new must be provided")
-		}
 		newRef, err = getCurRef()
 		if err != nil {
 			return "", "", err
@@ -132,16 +166,16 @@ func parseGitRefs(oldRef, newRef string) (string, string, error) {
 	return oldRef, newRef, nil
 }
 
-func buildBenches(ctx context.Context, pkgFilter []string, bss ...*benchSuite) error {
+func buildBenches(ctx context.Context, pkgFilter []string, postChck string, bss ...*benchSuite) error {
 	// Get the current branch so we can revert to it after, if possible.
 	if ref, ok, err := getCurSymbolicRef(); err != nil {
 		return err
 	} else if ok {
-		defer checkoutRef(ref)
+		defer checkoutRef(ref, "")
 	}
 	now := time.Now() // used to uniquely name artifact files
 	for _, bs := range bss {
-		if err := bs.build(pkgFilter, now); err != nil {
+		if err := bs.build(pkgFilter, postChck, now); err != nil {
 			return err
 		}
 	}
@@ -149,33 +183,41 @@ func buildBenches(ctx context.Context, pkgFilter []string, bss ...*benchSuite) e
 }
 
 func runCmpBenches(ctx context.Context, bs1, bs2 *benchSuite, tests []string, itersPerTest int) error {
+	fmt.Println("\nrunning benchmarks:")
 	var spinner ui.Spinner
-	spinner.Start(os.Stdout, "running benchmark binaries")
+	spinner.Start(os.Stdout, "")
 	defer spinner.Stop()
 	for i, t := range tests {
-		spinner.Update(fmt.Sprintf(": %s %s", testBinToPkg(t), ui.Fraction(i, len(tests))))
-		err := runCmpBench(bs1, bs2, t, itersPerTest)
-		if err != nil {
-			return err
+		pkg := testBinToPkg(t)
+		for j := 0; j < itersPerTest; j++ {
+			pkgFrac := ui.Fraction(i+1, len(tests))
+			iterFrac := ui.Fraction(j+1, itersPerTest)
+			progress := fmt.Sprintf(" pkg=%s iter=%s %s", pkgFrac, iterFrac, pkg)
+			spinner.Update(progress)
+
+			// Interleave test suite runs instead of using -count=itersPerTest. The
+			// idea is that this reduces the chance that we pick up external noise
+			// with a time correlation.
+			if err := runSingleBench(bs1, t); err != nil {
+				return err
+			}
+			if err := runSingleBench(bs2, t); err != nil {
+				return err
+			}
 		}
+		fmt.Println()
 	}
-	spinner.Update(ui.Fraction(len(tests), len(tests)))
 	return nil
 }
 
-func runCmpBench(bs1, bs2 *benchSuite, test string, itersPerTest int) error {
-	for i := 0; i < itersPerTest; i++ {
-		// Interleave test suite runs instead of using -count=itersPerTest. The
-		// idea is that this reduces the chance that we pick up external noise
-		// with a time correlation.
-		if err := runSingleBench(bs1, test); err != nil {
-			return err
-		}
-		if err := runSingleBench(bs2, test); err != nil {
-			return err
-		}
+func runCmpBench(bs1, bs2 *benchSuite, test string) error {
+	// Interleave test suite runs instead of using -count=itersPerTest. The
+	// idea is that this reduces the chance that we pick up external noise
+	// with a time correlation.
+	if err := runSingleBench(bs1, test); err != nil {
+		return err
 	}
-	return nil
+	return runSingleBench(bs2, test)
 }
 
 func runSingleBench(bs *benchSuite, test string) error {
@@ -196,21 +238,29 @@ func runSingleBench(bs *benchSuite, test string) error {
 	return spawnWith(os.Stdin, bs.outFile, bs.outFile, args...)
 }
 
-func processBenchOutput(ctx context.Context, bs1, bs2 *benchSuite) {
+func processBenchOutput(ctx context.Context, bs1, bs2 *benchSuite, srv *google.Service) error {
 	// We're going to be reading the output files, so seek to the beginning.
 	bs1.outFile.Seek(0, io.SeekStart)
 	bs2.outFile.Seek(0, io.SeekStart)
 
 	var c benchstat.Collection
-	c.Order = benchstat.ByDelta
+	c.Alpha = 0.05
+	c.Order = benchstat.Reverse(benchstat.ByDelta) // best first
 	c.AddFile("old", bs1.outFile)
 	c.AddFile("new", bs2.outFile)
 	tables := c.Tables()
-	for i, table := range tables {
-		fmt.Println(table.Metric)
-		// norange=true suppresses the "±" range columns.
-		benchstat.FormatCSV(os.Stdout, tables[i:i+1], true /* norange */)
+
+	if srv != nil {
+		name := fmt.Sprintf("cmpbench: %s vs. %s", bs1.ref, bs2.ref)
+		url, err := srv.CreateSheet(ctx, name, tables)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("generated sheet: %s\n", url)
+	} else {
+		benchstat.FormatText(os.Stdout, tables)
 	}
+	return nil
 }
 
 type benchSuite struct {
@@ -229,35 +279,28 @@ func makeBenchSuite(ref string) benchSuite {
 	}
 }
 
-func (bs *benchSuite) build(pkgFilter []string, t time.Time) error {
+func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (err error) {
 	if len(bs.testFiles) != 0 {
 		panic("benchSuite already built")
 	}
 
-	fmt.Printf("checking out '%s'\n", bs.ref)
-	if err := checkoutRef(bs.ref); err != nil {
-		return err
-	}
-
-	// Create the artifacts directory: ./cmpbench.<ref>/artifacts
+	// Create the artifacts directory: ./cmpbench/<ref>/artifacts
 	bs.artDir = testArtifactsDir(bs.ref)
-	err := os.MkdirAll(bs.artDir, 0744)
-	if err != nil {
+	if err = os.MkdirAll(bs.artDir, 0744); err != nil {
 		return err
 	}
 
-	// Create output file: ./cmpbench.<ref>/artifacts/out.<time>
+	// Create output file: ./cmpbench/<ref>/artifacts/out.<time>
 	outFileName := bs.getOutputFile(t)
 	bs.outFile, err = os.OpenFile(outFileName, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return err
 	}
 
-	// Create the binary directory: ./cmpbench.<ref>/bin.<hash(pkgFilter)>
+	// Create the binary directory: ./cmpbench/<ref>/bin/<hash(pkgFilter)>
 	bs.binDir = testBinDir(bs.ref, pkgFilter)
-	_, err = os.Stat(bs.binDir)
-	if err == nil {
-		fmt.Println("test binaries already exist; skipping build")
+	if _, err = os.Stat(bs.binDir); err == nil {
+		fmt.Printf("test binaries already exist for '%s'; skipping build\n", bs.ref)
 		files, err := ioutil.ReadDir(bs.binDir)
 		if err != nil {
 			return err
@@ -269,11 +312,22 @@ func (bs *benchSuite) build(pkgFilter []string, t time.Time) error {
 			bs.testFiles[f.Name()] = struct{}{}
 		}
 		return nil
-	}
-	if !os.IsNotExist(err) {
+	} else if !os.IsNotExist(err) {
 		return errors.Wrap(err, "looking for test directory")
 	}
 	if err := os.MkdirAll(bs.binDir, 0700); err != nil {
+		return err
+	}
+	// If the binaries are not generated successfully, delete the bin directory
+	// so we don't consider the build successful next time cmpbench runs.
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(bs.binDir)
+		}
+	}()
+
+	fmt.Printf("checking out '%s'\n", bs.ref)
+	if err := checkoutRef(bs.ref, postChck); err != nil {
 		return err
 	}
 

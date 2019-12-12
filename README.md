@@ -32,8 +32,8 @@ Options:
   -n, --new    <commit> measure the difference between this commit and old (default HEAD)
   -o, --old    <commit> measure the difference between this commit and new (default new~)
   -c, --count  <n>      run tests and benchmarks n times (default 1)
-	  --post-checkout   an optional command to run after checking out each branch
-	                    to configure the git repo so that 'go build' succeeds
+      --post-checkout   an optional command to run after checking out each branch
+                        to configure the git repo so that 'go build' succeeds
       --sheets          output the results to a new Google sheets document
       --help            display this help
 

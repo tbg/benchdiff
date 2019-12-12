@@ -45,8 +45,8 @@ Options:
   -n, --new    <commit> measure the difference between this commit and old (default HEAD)
   -o, --old    <commit> measure the difference between this commit and new (default new~)
   -c, --count  <n>      run tests and benchmarks n times (default 1)
-	  --post-checkout   an optional command to run after checking out each branch
-	                    to configure the git repo so that 'go build' succeeds
+      --post-checkout   an optional command to run after checking out each branch
+                        to configure the git repo so that 'go build' succeeds
       --sheets          output the results to a new Google sheets document
       --help            display this help
 
@@ -235,7 +235,19 @@ func runSingleBench(bs *benchSuite, test string) error {
 	if hasLogToStderr {
 		args = append(args, "--logtostderr", "NONE")
 	}
-	return spawnWith(os.Stdin, bs.outFile, bs.outFile, args...)
+	if err := spawnWith(os.Stdin, bs.outFile, bs.outFile, args...); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() == 1 {
+				// Assume exit code 1 corresponds to a benchmark failure.
+				fmt.Println("  saw one or more benchmark failures")
+			} else {
+				return errors.Wrapf(err, "error running %v: %s", args, exitErr.Stderr)
+			}
+		} else {
+			return errors.Wrapf(err, "error running %v", args)
+		}
+	}
+	return nil
 }
 
 func processBenchOutput(ctx context.Context, bs1, bs2 *benchSuite, srv *google.Service) error {

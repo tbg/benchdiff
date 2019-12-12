@@ -7,12 +7,31 @@ import (
 	"github.com/pkg/errors"
 )
 
+// getRefAsSHA returns the provided git ref as a SHA.
+func getRefAsSHA(ref string) (string, error) {
+	ref, err := capture("git", "rev-parse", ref)
+	if err != nil {
+		return "", errors.Wrap(err, "getting git ref as sha")
+	}
+	return ref, nil
+}
+
 // getCurRef returns the active git ref in the current working directory's
 // repository.
 func getCurRef() (string, error) {
-	ref, err := capture("git", "rev-parse", "HEAD")
+	ref, err := getRefAsSHA("HEAD")
 	if err != nil {
 		return "", errors.Wrap(err, "getting current git ref")
+	}
+	return ref, nil
+}
+
+// getCurRef returns the previous git ref in the current working directory's
+// repository.
+func getPrevRef(ref string) (string, error) {
+	ref, err := getRefAsSHA(ref + "~")
+	if err != nil {
+		return "", errors.Wrap(err, "getting previous git ref")
 	}
 	return ref, nil
 }
@@ -30,16 +49,6 @@ func getCurSymbolicRef() (string, bool, error) {
 	}
 	ref = strings.TrimPrefix(ref, "refs/heads/")
 	return ref, true, nil
-}
-
-// getCurRef returns the previous git ref in the current working directory's
-// repository.
-func getPrevRef(ref string) (string, error) {
-	ref, err := capture("git", "rev-parse", ref+"~")
-	if err != nil {
-		return "", errors.Wrap(err, "getting previous git ref")
-	}
-	return ref, nil
 }
 
 // checkValidRef determines whether the provided git ref is valid in the current

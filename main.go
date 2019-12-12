@@ -143,6 +143,11 @@ func parseGitRefs(oldRef, newRef string) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
+	} else {
+		newRef, err = getRefAsSHA(newRef)
+		if err != nil {
+			return "", "", err
+		}
 	}
 	newRef = shortenRef(newRef)
 	if ok, err := checkValidRef(newRef); err != nil {
@@ -153,6 +158,11 @@ func parseGitRefs(oldRef, newRef string) (string, string, error) {
 
 	if oldRef == "" {
 		oldRef, err = getPrevRef(newRef)
+		if err != nil {
+			return "", "", err
+		}
+	} else {
+		oldRef, err = getRefAsSHA(oldRef)
 		if err != nil {
 			return "", "", err
 		}

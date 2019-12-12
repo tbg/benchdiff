@@ -10,25 +10,26 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
-	"github.com/nvanbenschoten/cmpbench/google"
-	"github.com/nvanbenschoten/cmpbench/ui"
+	"github.com/nvanbenschoten/benchcmp/google"
+	"github.com/nvanbenschoten/benchcmp/ui"
 	"github.com/pkg/errors"
 	"github.com/spf13/pflag"
 	"golang.org/x/perf/benchstat"
 )
 
-const usage = `usage: cmpbench [--old <commit>] [--new <commit>] <pkgs>...`
+const usage = `usage: benchcmp [--old <commit>] [--new <commit>] <pkgs>...`
 
-const helpString = `cmpbench automates the process of running and comparing Go microbenchmarks
+const helpString = `benchcmp automates the process of running and comparing Go microbenchmarks
 across code changes.
 
-cmpbench runs all microbenchmarks in the specified packages against the old and
+benchcmp runs all microbenchmarks in the specified packages against the old and
 new commit. It then passes the benchmark output through benchstat to compute
 statistics about the results.
 
-By default, cmpbench outputs these results in a textual format. However, if the
+By default, benchcmp outputs these results in a textual format. However, if the
 --sheets flag is passed then it will upload the result to a Google Sheets
 spreadsheet. To access this, users must have a Google service account. For
 information, see https://cloud.google.com/iam/docs/service-accounts.
@@ -37,7 +38,7 @@ The Google service account must meet the following conditions:
 1. The Google Sheets API must be enabled for the account's project
 2. The Google Drive  API must be enabled for the account's project
 
-When the --sheets flag is passed, cmpbench will search for a credentials file
+When the --sheets flag is passed, benchcmp will search for a credentials file
 containing the service account key using the GOOGLE_APPLICATION_CREDENTIALS
 environment variable. See https://cloud.google.com/docs/authentication/production.
 
@@ -51,10 +52,10 @@ Options:
       --help            display this help
 
 Example invocations:
-  $ cmpbench --sheets ./pkg/...
-  $ cmpbench --old=master~ --new=master ./pkg/kv ./pkg/storage/...
-  $ cmpbench --new=d1fbdb2 --count=2 ./pkg/sql/...
-  $ cmpbench --new=6299bd4 --sheets --post-checkout='make buildshort' ./pkg/workload/...`
+  $ benchcmp --sheets ./pkg/...
+  $ benchcmp --old=master~ --new=master ./pkg/kv ./pkg/storage/...
+  $ benchcmp --new=d1fbdb2 --count=2 ./pkg/sql/...
+  $ benchcmp --new=6299bd4 --sheets --post-checkout='make buildshort' ./pkg/workload/...`
 
 // TODO: it's unclear whether G Suite Domain-wide Delegation is required for the
 // Google service account. If it is, add the following requirement to the help
@@ -119,13 +120,13 @@ func run(ctx context.Context) error {
 
 	// Run the benchmarks.
 	tests := oldSuite.intersectTests(&newSuite)
-	err = runCmpBenches(ctx, &oldSuite, &newSuite, tests.sorted(), itersPerTest)
+	err = runbenchcmpes(ctx, &oldSuite, &newSuite, tests.sorted(), itersPerTest)
 	if err != nil {
 		return err
 	}
 
 	// Process the benchmark output.
-	return processBenchOutput(ctx, &oldSuite, &newSuite, srv)
+	return processBenchOutput(ctx, &oldSuite, &newSuite, pkgFilter, srv)
 }
 
 func runHelp(ctx context.Context) error {
@@ -182,7 +183,7 @@ func buildBenches(ctx context.Context, pkgFilter []string, postChck string, bss 
 	return nil
 }
 
-func runCmpBenches(ctx context.Context, bs1, bs2 *benchSuite, tests []string, itersPerTest int) error {
+func runbenchcmpes(ctx context.Context, bs1, bs2 *benchSuite, tests []string, itersPerTest int) error {
 	fmt.Println("\nrunning benchmarks:")
 	var spinner ui.Spinner
 	spinner.Start(os.Stdout, "")
@@ -210,7 +211,7 @@ func runCmpBenches(ctx context.Context, bs1, bs2 *benchSuite, tests []string, it
 	return nil
 }
 
-func runCmpBench(bs1, bs2 *benchSuite, test string) error {
+func runbenchcmp(bs1, bs2 *benchSuite, test string) error {
 	// Interleave test suite runs instead of using -count=itersPerTest. The
 	// idea is that this reduces the chance that we pick up external noise
 	// with a time correlation.
@@ -250,7 +251,7 @@ func runSingleBench(bs *benchSuite, test string) error {
 	return nil
 }
 
-func processBenchOutput(ctx context.Context, bs1, bs2 *benchSuite, srv *google.Service) error {
+func processBenchOutput(ctx context.Context, bs1, bs2 *benchSuite, pkgFilter []string, srv *google.Service) error {
 	// We're going to be reading the output files, so seek to the beginning.
 	bs1.outFile.Seek(0, io.SeekStart)
 	bs2.outFile.Seek(0, io.SeekStart)
@@ -263,7 +264,7 @@ func processBenchOutput(ctx context.Context, bs1, bs2 *benchSuite, srv *google.S
 	tables := c.Tables()
 
 	if srv != nil {
-		name := fmt.Sprintf("cmpbench: %s vs. %s", bs1.ref, bs2.ref)
+		name := fmt.Sprintf("benchcmp: %s (%s -> %s)", strings.Join(pkgFilter, " "), bs1.ref, bs2.ref)
 		url, err := srv.CreateSheet(ctx, name, tables)
 		if err != nil {
 			return err
@@ -296,20 +297,20 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 		panic("benchSuite already built")
 	}
 
-	// Create the artifacts directory: ./cmpbench/<ref>/artifacts
+	// Create the artifacts directory: ./benchcmp/<ref>/artifacts
 	bs.artDir = testArtifactsDir(bs.ref)
 	if err = os.MkdirAll(bs.artDir, 0744); err != nil {
 		return err
 	}
 
-	// Create output file: ./cmpbench/<ref>/artifacts/out.<time>
+	// Create output file: ./benchcmp/<ref>/artifacts/out.<time>
 	outFileName := bs.getOutputFile(t)
 	bs.outFile, err = os.OpenFile(outFileName, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return err
 	}
 
-	// Create the binary directory: ./cmpbench/<ref>/bin/<hash(pkgFilter)>
+	// Create the binary directory: ./benchcmp/<ref>/bin/<hash(pkgFilter)>
 	bs.binDir = testBinDir(bs.ref, pkgFilter)
 	if _, err = os.Stat(bs.binDir); err == nil {
 		fmt.Printf("test binaries already exist for '%s'; skipping build\n", bs.ref)
@@ -331,7 +332,7 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 		return err
 	}
 	// If the binaries are not generated successfully, delete the bin directory
-	// so we don't consider the build successful next time cmpbench runs.
+	// so we don't consider the build successful next time benchcmp runs.
 	defer func() {
 		if err != nil {
 			_ = os.RemoveAll(bs.binDir)
@@ -350,7 +351,7 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 	}
 
 	var spinner ui.Spinner
-	spinner.Start(os.Stdout, "building benchmark binaries for "+bs.ref)
+	spinner.Start(os.Stdout, fmt.Sprintf("building benchmark binaries for '%s'", bs.ref))
 	defer spinner.Stop()
 	for i, pkg := range pkgs {
 		spinner.Update(ui.Fraction(i, len(pkgs)))

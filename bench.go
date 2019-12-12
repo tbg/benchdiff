@@ -22,13 +22,13 @@ func expandPackages(pkgFilter []string) ([]string, error) {
 	return strings.Split(pkgs, "\n"), nil
 }
 
-// testDir returns the directory to store cmpbench artifacts and binaries for
+// testDir returns the directory to store benchcmp artifacts and binaries for
 // specified git ref.
 func testDir(ref string) string {
-	return filepath.Join("cmpbench", ref)
+	return filepath.Join("benchcmp", ref)
 }
 
-// testArtifactsDir returns the directory to store cmpbench artifacts for
+// testArtifactsDir returns the directory to store benchcmp artifacts for
 // specified git ref.
 func testArtifactsDir(ref string) string {
 	return filepath.Join(testDir(ref), "artifacts")
@@ -43,7 +43,7 @@ func hash(s []string) string {
 	return strconv.Itoa(int(u))
 }
 
-// testArtifactsDir returns the directory to store cmpbench binaries for
+// testArtifactsDir returns the directory to store benchcmp binaries for
 // specified git ref.
 func testBinDir(ref string, pkgFilter []string) string {
 	return filepath.Join(testDir(ref), "bin", hash(pkgFilter))

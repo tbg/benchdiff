@@ -1,21 +1,21 @@
-# benchcmp
+# benchdiff
 
 A tool for automating the process of running and comparing Go benchmarks across code changes.
 
 ## Usage
 
 ```
-$ benchcmp --help
-usage: benchcmp [--old <commit>] [--new <commit>] <pkgs>...
+$ benchdiff --help
+usage: benchdiff [--old <commit>] [--new <commit>] <pkgs>...
 
-benchcmp automates the process of running and comparing Go microbenchmarks
+benchdiff automates the process of running and comparing Go microbenchmarks
 across code changes.
 
-benchcmp runs all microbenchmarks in the specified packages against the old and
+benchdiff runs all microbenchmarks in the specified packages against the old and
 new commit. It then passes the benchmark output through benchstat to compute
 statistics about the results.
 
-By default, benchcmp outputs these results in a textual format. However, if the
+By default, benchdiff outputs these results in a textual format. However, if the
 --sheets flag is passed then it will upload the result to a Google Sheets
 spreadsheet. To access this, users must have a Google service account. For
 information, see https://cloud.google.com/iam/docs/service-accounts.
@@ -24,7 +24,7 @@ The Google service account must meet the following conditions:
 1. The Google Sheets API must be enabled for the account's project
 2. The Google Drive  API must be enabled for the account's project
 
-When the --sheets flag is passed, benchcmp will search for a credentials file
+When the --sheets flag is passed, benchdiff will search for a credentials file
 containing the service account key using the GOOGLE_APPLICATION_CREDENTIALS
 environment variable. See https://cloud.google.com/docs/authentication/production.
 
@@ -38,10 +38,10 @@ Options:
       --help            display this help
 
 Example invocations:
-  $ benchcmp --sheets ./pkg/...
-  $ benchcmp --old=master~ --new=master ./pkg/kv ./pkg/storage/...
-  $ benchcmp --new=d1fbdb2 --count=2 ./pkg/sql/...
-  $ benchcmp --new=6299bd4 --sheets --post-checkout='make buildshort' ./pkg/workload/...
+  $ benchdiff --sheets ./pkg/...
+  $ benchdiff --old=master~ --new=master ./pkg/kv ./pkg/storage/...
+  $ benchdiff --new=d1fbdb2 --count=2 ./pkg/sql/...
+  $ benchdiff --new=6299bd4 --sheets --post-checkout='make buildshort' ./pkg/workload/...
 ```
 
 ## Examples
@@ -49,7 +49,7 @@ Example invocations:
 Using text output:
 
 ```
-$ benchcmp --new=6299bd4 ./pkg/workload/...
+$ benchdiff --new=6299bd4 ./pkg/workload/...
 test binaries already exist for 'efcf66c'; skipping build
 test binaries already exist for '6299bd4'; skipping build
 
@@ -91,7 +91,7 @@ Using Google Sheets output:
 
 ```
 $ export GOOGLE_APPLICATION_CREDENTIALS=/Users/nathan/.service-account-creds.json
-$ benchcmp --new=6299bd4 --sheets ./pkg/workload/...
+$ benchdiff --new=6299bd4 --sheets ./pkg/workload/...
 test binaries already exist for 'efcf66c'; skipping build
 test binaries already exist for '6299bd4'; skipping build
 

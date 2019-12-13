@@ -194,9 +194,9 @@ func buildBenches(ctx context.Context, pkgFilter []string, postChck string, bss 
 }
 
 func runCmpBenches(ctx context.Context, bs1, bs2 *benchSuite, tests []string, itersPerTest int) error {
-	fmt.Println("\nrunning benchmarks:")
+	fmt.Fprintf(os.Stderr, "\nrunning benchmarks:")
 	var spinner ui.Spinner
-	spinner.Start(os.Stdout, "")
+	spinner.Start(os.Stderr, "")
 	defer spinner.Stop()
 	for i, t := range tests {
 		pkg := testBinToPkg(t)
@@ -216,7 +216,7 @@ func runCmpBenches(ctx context.Context, bs1, bs2 *benchSuite, tests []string, it
 				return err
 			}
 		}
-		fmt.Println()
+		fmt.Fprintln(os.Stderr)
 	}
 	return nil
 }
@@ -240,7 +240,7 @@ func runSingleBench(bs *benchSuite, test string) error {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			if exitErr.ExitCode() == 1 {
 				// Assume exit code 1 corresponds to a benchmark failure.
-				fmt.Println("  saw one or more benchmark failures")
+				fmt.Fprintln(os.Stderr, "  saw one or more benchmark failures")
 			} else {
 				return errors.Wrapf(err, "error running %v: %s", args, exitErr.Stderr)
 			}
@@ -313,7 +313,7 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 	// Create the binary directory: ./benchdiff/<ref>/bin/<hash(pkgFilter)>
 	bs.binDir = testBinDir(bs.ref, pkgFilter)
 	if _, err = os.Stat(bs.binDir); err == nil {
-		fmt.Printf("test binaries already exist for '%s'; skipping build\n", bs.ref)
+		fmt.Fprintf(os.Stderr, "test binaries already exist for '%s'; skipping build\n", bs.ref)
 		files, err := ioutil.ReadDir(bs.binDir)
 		if err != nil {
 			return err
@@ -339,7 +339,7 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 		}
 	}()
 
-	fmt.Printf("checking out '%s'\n", bs.ref)
+	fmt.Fprintf(os.Stderr, "checking out '%s'\n", bs.ref)
 	if err := checkoutRef(bs.ref, postChck); err != nil {
 		return err
 	}
@@ -351,7 +351,7 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 	}
 
 	var spinner ui.Spinner
-	spinner.Start(os.Stdout, fmt.Sprintf("building benchmark binaries for '%s'", bs.ref))
+	spinner.Start(os.Stderr, fmt.Sprintf("building benchmark binaries for '%s'", bs.ref))
 	defer spinner.Stop()
 	for i, pkg := range pkgs {
 		spinner.Update(ui.Fraction(i, len(pkgs)))

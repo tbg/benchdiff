@@ -120,7 +120,7 @@ func run(ctx context.Context) error {
 
 	// Run the benchmarks.
 	tests := oldSuite.intersectTests(&newSuite)
-	err = runbenchdiffes(ctx, &oldSuite, &newSuite, tests.sorted(), itersPerTest)
+	err = runCmpBenches(ctx, &oldSuite, &newSuite, tests.sorted(), itersPerTest)
 	if err != nil {
 		return err
 	}
@@ -193,7 +193,7 @@ func buildBenches(ctx context.Context, pkgFilter []string, postChck string, bss 
 	return nil
 }
 
-func runbenchdiffes(ctx context.Context, bs1, bs2 *benchSuite, tests []string, itersPerTest int) error {
+func runCmpBenches(ctx context.Context, bs1, bs2 *benchSuite, tests []string, itersPerTest int) error {
 	fmt.Println("\nrunning benchmarks:")
 	var spinner ui.Spinner
 	spinner.Start(os.Stdout, "")
@@ -219,16 +219,6 @@ func runbenchdiffes(ctx context.Context, bs1, bs2 *benchSuite, tests []string, i
 		fmt.Println()
 	}
 	return nil
-}
-
-func runbenchdiff(bs1, bs2 *benchSuite, test string) error {
-	// Interleave test suite runs instead of using -count=itersPerTest. The
-	// idea is that this reduces the chance that we pick up external noise
-	// with a time correlation.
-	if err := runSingleBench(bs1, test); err != nil {
-		return err
-	}
-	return runSingleBench(bs2, test)
 }
 
 func runSingleBench(bs *benchSuite, test string) error {

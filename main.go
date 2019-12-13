@@ -264,12 +264,16 @@ func processBenchOutput(ctx context.Context, bs1, bs2 *benchSuite, pkgFilter []s
 	tables := c.Tables()
 
 	if srv != nil {
-		name := fmt.Sprintf("benchdiff: %s (%s -> %s)", strings.Join(pkgFilter, " "), bs1.ref, bs2.ref)
-		url, err := srv.CreateSheet(ctx, name, tables)
+		// When outputting a Google sheet, also output as text.
+		benchstat.FormatText(os.Stdout, tables)
+
+		pkgFilterStr := strings.Join(pkgFilter, " ")
+		sheetName := fmt.Sprintf("benchdiff: %s (%s -> %s)", pkgFilterStr, bs1.ref, bs2.ref)
+		url, err := srv.CreateSheet(ctx, sheetName, tables)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("generated sheet: %s\n", url)
+		fmt.Printf("\ngenerated sheet: %s\n", url)
 	} else {
 		benchstat.FormatText(os.Stdout, tables)
 	}

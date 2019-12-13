@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strconv"
 	"strings"
 
@@ -90,5 +91,7 @@ func checkoutRef(ref string, postCheckout string) error {
 		return nil
 	}
 	args := strings.Split(postCheckout, " ")
-	return errors.Wrap(spawn(args...), "post-checkout")
+	// Send all output of post-checkout hook to stderr.
+	err := spawnWith(os.Stdin, os.Stderr, os.Stderr, args...)
+	return errors.Wrap(err, "post-checkout")
 }

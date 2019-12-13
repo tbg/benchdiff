@@ -48,13 +48,14 @@ Options:
   -c, --count  <n>      run tests and benchmarks n times (default 1)
       --post-checkout   an optional command to run after checking out each branch
                         to configure the git repo so that 'go build' succeeds
-      --sheets          output the results to a new Google sheets document
+      --csv             output the results in a csv format
+      --sheets          output the results to a new Google Sheets document
       --help            display this help
 
 Example invocations:
   $ benchdiff --sheets ./pkg/...
   $ benchdiff --old=master~ --new=master ./pkg/kv ./pkg/storage/...
-  $ benchdiff --new=d1fbdb2 --count=2 ./pkg/sql/...
+  $ benchdiff --new=d1fbdb2 --count=2 --csv ./pkg/sql/...
   $ benchdiff --new=6299bd4 --sheets --post-checkout='make buildshort' ./pkg/workload/...`
 
 // TODO: it's unclear whether G Suite Domain-wide Delegation is required for the
@@ -62,6 +63,37 @@ Example invocations:
 // text above.
 //   3. G Suite Domain-wide Delegation must be enabled. See
 //    https://developers.google.com/identity/protocols/OAuth2ServiceAccount#delegatingauthority.
+
+type outputFmt int
+
+const (
+	_ outputFmt = iota
+	// Output the benchmark comparison in a text format to stdout.
+	//
+	// Example:
+	//   name         old time/op    new time/op    delta
+	//   String-8       68.6ns ± 0%    68.2ns ± 0%   ~     (p=1.000 n=1+1)
+	//   FromBytes-8    4.92ns ± 0%    4.97ns ± 0%   ~     (p=1.000 n=1+1)
+	text
+	// Output the benchmark comparison in a csv format to stdout.
+	//
+	// Example:
+	//   name,old time/op (ns/op),±,new time/op (ns/op),±,delta,±
+	//   String-8,6.82000E+01,0%,6.76000E+01,0%,~,(p=1.000 n=1+1)
+	//   FromBytes-8,5.01000E+00,0%,4.95000E+00,0%,~,(p=1.000 n=1+1)
+	csv
+	// Output the benchmark comaprison in a Google Sheets format and print
+	// the sheet's URL to stdout. When in this mode, the comparison is also
+	// printed as text to stdout.
+	//
+	// Example:
+	//   name         old time/op    new time/op    delta
+	//   String-8       68.6ns ± 0%    68.2ns ± 0%   ~     (p=1.000 n=1+1)
+	//   FromBytes-8    4.92ns ± 0%    4.97ns ± 0%   ~     (p=1.000 n=1+1)
+	//
+	//   generated sheet: https://docs.google.com/spreadsheets/...
+	sheets
+)
 
 func main() {
 	if err := run(context.Background()); err != nil {
@@ -71,12 +103,13 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	var help, useSheets bool
+	var help, useCSV, useSheets bool
 	var oldRef, newRef, postChck string
 	var itersPerTest int
 
 	pflag.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
 	pflag.BoolVarP(&help, "help", "h", false, "")
+	pflag.BoolVarP(&useCSV, "csv", "", false, "")
 	pflag.BoolVarP(&useSheets, "sheets", "", false, "")
 	pflag.StringVarP(&oldRef, "old", "o", "", "")
 	pflag.StringVarP(&newRef, "new", "n", "", "")
@@ -94,19 +127,29 @@ func run(ctx context.Context) error {
 	pkgFilter := prArgs
 	sort.Strings(pkgFilter)
 
-	// Parse the specified git refs.
+	// Parse the output format.
+	var out outputFmt
+	var srv *google.Service
 	var err error
+	switch {
+	case useCSV && useSheets:
+		return errors.New("--csv and --sheets incompatible")
+	case useCSV:
+		out = csv
+	case useSheets:
+		out = sheets
+		// Init the Google service ASAP to detect credential issues.
+		if srv, err = google.New(ctx); err != nil {
+			return err
+		}
+	default:
+		out = text
+	}
+
+	// Parse the specified git refs.
 	oldRef, newRef, err = parseGitRefs(oldRef, newRef)
 	if err != nil {
 		return err
-	}
-
-	var srv *google.Service
-	if useSheets {
-		srv, err = google.New(ctx)
-		if err != nil {
-			return err
-		}
 	}
 
 	// Build the benchmark suites.
@@ -126,7 +169,7 @@ func run(ctx context.Context) error {
 	}
 
 	// Process the benchmark output.
-	return processBenchOutput(ctx, &oldSuite, &newSuite, pkgFilter, srv)
+	return processBenchOutput(ctx, &oldSuite, &newSuite, out, pkgFilter, srv)
 }
 
 func runHelp(ctx context.Context) error {
@@ -251,31 +294,47 @@ func runSingleBench(bs *benchSuite, test string) error {
 	return nil
 }
 
-func processBenchOutput(ctx context.Context, bs1, bs2 *benchSuite, pkgFilter []string, srv *google.Service) error {
+func processBenchOutput(
+	ctx context.Context,
+	oldSuite, newSuite *benchSuite,
+	out outputFmt,
+	pkgFilter []string,
+	srv *google.Service,
+) error {
 	// We're going to be reading the output files, so seek to the beginning.
-	bs1.outFile.Seek(0, io.SeekStart)
-	bs2.outFile.Seek(0, io.SeekStart)
+	oldSuite.outFile.Seek(0, io.SeekStart)
+	newSuite.outFile.Seek(0, io.SeekStart)
 
+	// Compute the benchmark comparison results.
 	var c benchstat.Collection
 	c.Alpha = 0.05
-	c.Order = benchstat.Reverse(benchstat.ByDelta) // best first
-	c.AddFile("old", bs1.outFile)
-	c.AddFile("new", bs2.outFile)
+	c.Order = benchstat.Reverse(benchstat.ByDelta) // best, first
+	c.AddFile("old", oldSuite.outFile)
+	c.AddFile("new", newSuite.outFile)
 	tables := c.Tables()
 
-	if srv != nil {
-		// When outputting a Google sheet, also output as text.
+	// Output the results.
+	switch out {
+	case text:
+		benchstat.FormatText(os.Stdout, tables)
+	case csv:
+		// If norange is true, suppress the range information for each data item.
+		// If norange is false, insert a "±" in the appropriate columns of the header row.
+		norange := false
+		benchstat.FormatCSV(os.Stdout, tables, norange)
+	case sheets:
+		// When outputting a Google sheet, also output as text first.
 		benchstat.FormatText(os.Stdout, tables)
 
-		pkgFilterStr := strings.Join(pkgFilter, " ")
-		sheetName := fmt.Sprintf("benchdiff: %s (%s -> %s)", pkgFilterStr, bs1.ref, bs2.ref)
+		sheetName := fmt.Sprintf("benchdiff: %s (%s -> %s)",
+			strings.Join(pkgFilter, " "), oldSuite.ref, newSuite.ref)
 		url, err := srv.CreateSheet(ctx, sheetName, tables)
 		if err != nil {
 			return err
 		}
 		fmt.Printf("\ngenerated sheet: %s\n", url)
-	} else {
-		benchstat.FormatText(os.Stdout, tables)
+	default:
+		panic("unexpected")
 	}
 	return nil
 }

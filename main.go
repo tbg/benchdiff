@@ -49,6 +49,7 @@ Options:
       --post-checkout   an optional command to run after checking out each branch
                         to configure the git repo so that 'go build' succeeds
       --csv             output the results in a csv format
+      --html            output the results in an HTML table
       --sheets          output the results to a new Google Sheets document
       --help            display this help
 
@@ -82,6 +83,19 @@ const (
 	//   String-8,6.82000E+01,0%,6.76000E+01,0%,~,(p=1.000 n=1+1)
 	//   FromBytes-8,5.01000E+00,0%,4.95000E+00,0%,~,(p=1.000 n=1+1)
 	csv
+	// Output the benchmark comparison in an HTML format to stdout.
+	//
+	// Example:
+	//   <table class='benchstat oldnew'>
+	//   <tr class='configs'><th><th>old<th>new
+	//   <tbody>
+	//   <tr><th><th colspan='2' class='metric'>time/op<th>delta
+	//   <tr class='unchanged'><td>String-8<td>70.1ns ± 0%<td>69.6ns ± 0%<td class='nodelta'>~<td class='note'>(p=1.000 n=1&#43;1)
+	//   <tr class='unchanged'><td>FromBytes-8<td>5.42ns ± 0%<td>5.05ns ± 0%<td class='nodelta'>~<td class='note'>(p=1.000 n=1&#43;1)
+	//   <tr><td>&nbsp;
+	//   </tbody>
+	//   </table>
+	html
 	// Output the benchmark comaprison in a Google Sheets format and print
 	// the sheet's URL to stdout. When in this mode, the comparison is also
 	// printed as text to stdout.
@@ -103,14 +117,15 @@ func main() {
 }
 
 func run(ctx context.Context) error {
-	var help, useCSV, useSheets bool
+	var help, outCSV, outHTML, outSheets bool
 	var oldRef, newRef, postChck string
 	var itersPerTest int
 
 	pflag.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
 	pflag.BoolVarP(&help, "help", "h", false, "")
-	pflag.BoolVarP(&useCSV, "csv", "", false, "")
-	pflag.BoolVarP(&useSheets, "sheets", "", false, "")
+	pflag.BoolVarP(&outCSV, "csv", "", false, "")
+	pflag.BoolVarP(&outHTML, "html", "", false, "")
+	pflag.BoolVarP(&outSheets, "sheets", "", false, "")
 	pflag.StringVarP(&oldRef, "old", "o", "", "")
 	pflag.StringVarP(&newRef, "new", "n", "", "")
 	pflag.StringVarP(&postChck, "post-checkout", "", "", "")
@@ -132,11 +147,19 @@ func run(ctx context.Context) error {
 	var srv *google.Service
 	var err error
 	switch {
-	case useCSV && useSheets:
-		return errors.New("--csv and --sheets incompatible")
-	case useCSV:
+	case outCSV:
+		if outHTML {
+			return errors.New("--csv and --html incompatible")
+		} else if outSheets {
+			return errors.New("--csv and --sheets incompatible")
+		}
 		out = csv
-	case useSheets:
+	case outHTML:
+		if outSheets {
+			return errors.New("--html and --sheets incompatible")
+		}
+		out = html
+	case outSheets:
 		out = sheets
 		// Init the Google service ASAP to detect credential issues.
 		if srv, err = google.New(ctx); err != nil {
@@ -322,6 +345,10 @@ func processBenchOutput(
 		// If norange is false, insert a "±" in the appropriate columns of the header row.
 		norange := false
 		benchstat.FormatCSV(os.Stdout, tables, norange)
+	case html:
+		var buf bytes.Buffer
+		benchstat.FormatHTML(&buf, tables)
+		io.Copy(os.Stdout, &buf)
 	case sheets:
 		// When outputting a Google sheet, also output as text first.
 		benchstat.FormatText(os.Stdout, tables)

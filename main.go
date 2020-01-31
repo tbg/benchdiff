@@ -45,6 +45,7 @@ environment variable. See https://cloud.google.com/docs/authentication/productio
 Options:
   -n, --new    <commit> measure the difference between this commit and old (default HEAD)
   -o, --old    <commit> measure the difference between this commit and new (default new~)
+  -r, --run    <regexp> run only benchmarks matching regexp
   -c, --count  <n>      run tests and benchmarks n times (default 1)
       --post-checkout   an optional command to run after checking out each branch
                         to configure the git repo so that 'go build' succeeds
@@ -56,7 +57,7 @@ Options:
 Example invocations:
   $ benchdiff --sheets ./pkg/...
   $ benchdiff --old=master~ --new=master ./pkg/kv ./pkg/storage/...
-  $ benchdiff --new=d1fbdb2 --count=2 --csv ./pkg/sql/...
+  $ benchdiff --new=d1fbdb2 --run=Datum --count=2 --csv ./pkg/sql/...
   $ benchdiff --new=6299bd4 --sheets --post-checkout='make buildshort' ./pkg/workload/...`
 
 // TODO: it's unclear whether G Suite Domain-wide Delegation is required for the
@@ -118,7 +119,7 @@ func main() {
 
 func run(ctx context.Context) error {
 	var help, outCSV, outHTML, outSheets bool
-	var oldRef, newRef, postChck string
+	var oldRef, newRef, postChck, runPattern string
 	var itersPerTest int
 
 	pflag.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
@@ -129,6 +130,7 @@ func run(ctx context.Context) error {
 	pflag.StringVarP(&oldRef, "old", "o", "", "")
 	pflag.StringVarP(&newRef, "new", "n", "", "")
 	pflag.StringVarP(&postChck, "post-checkout", "", "", "")
+	pflag.StringVarP(&runPattern, "run", "r", ".", "")
 	pflag.IntVarP(&itersPerTest, "count", "c", 10, "")
 	pflag.Parse()
 	prArgs := pflag.Args()
@@ -186,7 +188,7 @@ func run(ctx context.Context) error {
 
 	// Run the benchmarks.
 	tests := oldSuite.intersectTests(&newSuite)
-	err = runCmpBenches(ctx, &oldSuite, &newSuite, tests.sorted(), itersPerTest)
+	err = runCmpBenches(ctx, &oldSuite, &newSuite, tests.sorted(), runPattern, itersPerTest)
 	if err != nil {
 		return err
 	}
@@ -259,7 +261,9 @@ func buildBenches(ctx context.Context, pkgFilter []string, postChck string, bss 
 	return nil
 }
 
-func runCmpBenches(ctx context.Context, bs1, bs2 *benchSuite, tests []string, itersPerTest int) error {
+func runCmpBenches(
+	ctx context.Context, bs1, bs2 *benchSuite, tests []string, runPattern string, itersPerTest int,
+) error {
 	fmt.Fprintf(os.Stderr, "\nrunning benchmarks:")
 	var spinner ui.Spinner
 	spinner.Start(os.Stderr, "")
@@ -275,10 +279,10 @@ func runCmpBenches(ctx context.Context, bs1, bs2 *benchSuite, tests []string, it
 			// Interleave test suite runs instead of using -count=itersPerTest. The
 			// idea is that this reduces the chance that we pick up external noise
 			// with a time correlation.
-			if err := runSingleBench(bs1, t); err != nil {
+			if err := runSingleBench(bs1, t, runPattern); err != nil {
 				return err
 			}
-			if err := runSingleBench(bs2, t); err != nil {
+			if err := runSingleBench(bs2, t, runPattern); err != nil {
 				return err
 			}
 		}
@@ -287,7 +291,7 @@ func runCmpBenches(ctx context.Context, bs1, bs2 *benchSuite, tests []string, it
 	return nil
 }
 
-func runSingleBench(bs *benchSuite, test string) error {
+func runSingleBench(bs *benchSuite, test, runPattern string) error {
 	bin := bs.getTestBinary(test)
 
 	// Determine whether the binary has a --logtostderr flag. Use CombinedOutput
@@ -298,7 +302,7 @@ func runSingleBench(bs *benchSuite, test string) error {
 	hasLogToStderr := bytes.Contains(out, []byte("logtostderr"))
 
 	// Run the benchmark binary.
-	args := []string{bin, "-test.run", "-", "-test.bench", ".", "-test.benchmem"}
+	args := []string{bin, "-test.run", "-", "-test.bench", runPattern, "-test.benchmem"}
 	if hasLogToStderr {
 		args = append(args, "--logtostderr", "NONE")
 	}

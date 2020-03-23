@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -43,20 +44,21 @@ containing the service account key using the GOOGLE_APPLICATION_CREDENTIALS
 environment variable. See https://cloud.google.com/docs/authentication/production.
 
 Options:
-  -n, --new    <commit> measure the difference between this commit and old (default HEAD)
-  -o, --old    <commit> measure the difference between this commit and new (default new~)
-  -r, --run    <regexp> run only benchmarks matching regexp
-  -c, --count  <n>      run tests and benchmarks n times (default 1)
-      --post-checkout   an optional command to run after checking out each branch
-                        to configure the git repo so that 'go build' succeeds
-      --csv             output the results in a csv format
-      --html            output the results in an HTML table
-      --sheets          output the results to a new Google Sheets document
-      --help            display this help
+  -n, --new       <commit> measure the difference between this commit and old (default HEAD)
+  -o, --old       <commit> measure the difference between this commit and new (default new~)
+  -r, --run       <regexp> run only benchmarks matching regexp
+  -c, --count     <n>      run tests and benchmarks n times (default 1)
+  -t, --threshold <n>      exit with code 0 if all regressions are below threshold, else 1
+      --post-checkout      an optional command to run after checking out each branch to
+                           configure the git repo so that 'go build' succeeds
+      --csv                output the results in a csv format
+      --html               output the results in an HTML table
+	  --sheets             output the results to a new Google Sheets document
+      --help               display this help
 
 Example invocations:
   $ benchdiff --sheets ./pkg/...
-  $ benchdiff --old=master~ --new=master ./pkg/kv ./pkg/storage/...
+  $ benchdiff --old=master~ --new=master --threshold=0.2 ./pkg/kv ./pkg/storage/...
   $ benchdiff --new=d1fbdb2 --run=Datum --count=2 --csv ./pkg/sql/...
   $ benchdiff --new=6299bd4 --sheets --post-checkout='make buildshort' ./pkg/workload/...`
 
@@ -121,6 +123,7 @@ func run(ctx context.Context) error {
 	var help, outCSV, outHTML, outSheets bool
 	var oldRef, newRef, postChck, runPattern string
 	var itersPerTest int
+	var threshold float64
 
 	pflag.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
 	pflag.BoolVarP(&help, "help", "h", false, "")
@@ -132,6 +135,7 @@ func run(ctx context.Context) error {
 	pflag.StringVarP(&postChck, "post-checkout", "", "", "")
 	pflag.StringVarP(&runPattern, "run", "r", ".", "")
 	pflag.IntVarP(&itersPerTest, "count", "c", 10, "")
+	pflag.Float64VarP(&threshold, "threshold", "t", -1, "")
 	pflag.Parse()
 	prArgs := pflag.Args()
 
@@ -194,7 +198,13 @@ func run(ctx context.Context) error {
 	}
 
 	// Process the benchmark output.
-	return processBenchOutput(ctx, &oldSuite, &newSuite, out, pkgFilter, srv)
+	res, err := processBenchOutput(ctx, &oldSuite, &newSuite, out, pkgFilter, srv)
+	if err != nil {
+		return err
+	}
+
+	// Determine whether any tests exceeded the allowable regression threshold.
+	return checkPassing(threshold, res)
 }
 
 func runHelp(ctx context.Context) error {
@@ -327,7 +337,7 @@ func processBenchOutput(
 	out outputFmt,
 	pkgFilter []string,
 	srv *google.Service,
-) error {
+) ([]*benchstat.Table, error) {
 	// We're going to be reading the output files, so seek to the beginning.
 	oldSuite.outFile.Seek(0, io.SeekStart)
 	newSuite.outFile.Seek(0, io.SeekStart)
@@ -361,11 +371,29 @@ func processBenchOutput(
 			strings.Join(pkgFilter, " "), oldSuite.ref, newSuite.ref)
 		url, err := srv.CreateSheet(ctx, sheetName, tables)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		fmt.Printf("\ngenerated sheet: %s\n", url)
 	default:
 		panic("unexpected")
+	}
+	return tables, nil
+}
+
+func checkPassing(thresh float64, tables []*benchstat.Table) error {
+	if thresh < 0 {
+		return nil
+	}
+	threshPct := thresh * 100
+	for _, table := range tables {
+		for _, row := range table.Rows {
+			worse := row.Change == -1
+			exceededThresh := math.Abs(row.PctDelta) > threshPct
+			if worse && exceededThresh {
+				return errors.Errorf("%s regression in %s of %s exceeded threshold of %.2f%%",
+					table.Metric, row.Benchmark, row.Delta, threshPct)
+			}
+		}
 	}
 	return nil
 }

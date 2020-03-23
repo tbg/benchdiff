@@ -29,20 +29,24 @@ containing the service account key using the GOOGLE_APPLICATION_CREDENTIALS
 environment variable. See https://cloud.google.com/docs/authentication/production.
 
 Options:
-  -n, --new    <commit> measure the difference between this commit and old (default HEAD)
-  -o, --old    <commit> measure the difference between this commit and new (default new~)
-  -c, --count  <n>      run tests and benchmarks n times (default 1)
-      --post-checkout   an optional command to run after checking out each branch
-                        to configure the git repo so that 'go build' succeeds
-      --sheets          output the results to a new Google sheets document
-      --help            display this help
+  -n, --new       <commit> measure the difference between this commit and old (default HEAD)
+  -o, --old       <commit> measure the difference between this commit and new (default new~)
+  -r, --run       <regexp> run only benchmarks matching regexp
+  -c, --count     <n>      run tests and benchmarks n times (default 1)
+  -t, --threshold <n>      exit with code 0 if all regressions are below threshold, else 1
+      --post-checkout      an optional command to run after checking out each branch to
+                           configure the git repo so that 'go build' succeeds
+      --csv                output the results in a csv format
+      --html               output the results in an HTML table
+	  --sheets             output the results to a new Google Sheets document
+      --help               display this help
 
 Example invocations:
   $ benchdiff --sheets ./pkg/...
-  $ benchdiff --old=master   --new=mybranch ./pkg/util/uuid
-  $ benchdiff --old=master~5 --new=master   ./pkg/kv ./pkg/storage/...
-  $ benchdiff --new=d1fbdb2  --count=2      ./pkg/sql/...
-  $ benchdiff --new=6299bd4  --post-checkout='make buildshort' --sheets ./pkg/workload/...
+  $ benchdiff --old=master~ --new=master --threshold=0.2 ./pkg/kv ./pkg/storage/...
+  $ benchdiff --new=d1fbdb2 --run=Datum --count=2 --csv ./pkg/sql/...
+  $ benchdiff --new=6299bd4 --sheets --post-checkout='make buildshort' ./pkg/workload/...
+
 ```
 
 ## Examples

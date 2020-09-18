@@ -3,6 +3,7 @@ package google
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -262,6 +263,7 @@ func (srv *Service) createOverviewSheet(rawInfos []rawSheetInfo) *sheets.Sheet {
 					ValueBucket: &sheets.PivotGroupSortValueBucket{
 						ValuesIndex: 0,
 					},
+					ForceSendFields: []string{"SourceColumnOffset"},
 				}},
 				Values: []*sheets.PivotValue{{
 					SourceColumnOffset: info.deltaCol,
@@ -330,15 +332,21 @@ func sheetIDForTable(i int) int64 {
 func strCell(s string) *sheets.CellData {
 	return &sheets.CellData{
 		UserEnteredValue: &sheets.ExtendedValue{
-			StringValue: s, ForceSendFields: []string{"StringValue"},
+			StringValue: &s,
 		},
 	}
 }
 
 func numCell(f float64) *sheets.CellData {
+	switch {
+	case math.IsInf(f, +1):
+		f = math.MaxFloat64
+	case math.IsInf(f, -1):
+		f = -math.MaxFloat64
+	}
 	return &sheets.CellData{
 		UserEnteredValue: &sheets.ExtendedValue{
-			NumberValue: f, ForceSendFields: []string{"NumberValue"},
+			NumberValue: &f,
 		},
 	}
 }

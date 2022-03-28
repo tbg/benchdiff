@@ -44,18 +44,18 @@ containing the service account key using the GOOGLE_APPLICATION_CREDENTIALS
 environment variable. See https://cloud.google.com/docs/authentication/production.
 
 Options:
-  -n, --new       <commit> measure the difference between this commit and old (default HEAD)
-  -o, --old       <commit> measure the difference between this commit and new (default new~)
-  -r, --run       <regexp> run only benchmarks matching regexp
-  -c, --count     <n>      run tests and benchmarks n times (default 10)
-  -t, --threshold <n>      exit with code 0 if all regressions are below threshold, else 1
-      --post-checkout      an optional command to run after checking out each branch to
-                           configure the git repo so that 'go build' succeeds
-      --csv                output the results in a csv format
-      --html               output the results in an HTML table
-      --sheets             output the results to a new Google Sheets document
-      --help               display this help
-  -p, --previousRun <time> time of previous run; skip running benches and just (re)process previous run
+  -n, --new       <commit>  measure the difference between this commit and old (default HEAD)
+  -o, --old       <commit>  measure the difference between this commit and new (default new~)
+  -r, --run       <regexp>  run only benchmarks matching regexp
+  -c, --count     <n>       run tests and benchmarks n times (default 10)
+  -t, --threshold <n>       exit with code 0 if all regressions are below threshold, else 1
+  -p, --previous-run <time> time of previous run; skip running benches and just (re)process previous run
+      --post-checkout       an optional command to run after checking out each branch to
+                            configure the git repo so that 'go build' succeeds
+      --csv                 output the results in a csv format
+      --html                output the results in an HTML table
+      --sheets              output the results to a new Google Sheets document
+      --help                display this help
 
 Example invocations:
   $ benchdiff --sheets ./pkg/...
@@ -139,7 +139,7 @@ func run(ctx context.Context) error {
 	pflag.StringVarP(&runPattern, "run", "r", ".", "")
 	pflag.IntVarP(&itersPerTest, "count", "c", 10, "")
 	pflag.Float64VarP(&threshold, "threshold", "t", -1, "")
-	pflag.StringVarP(&previousRun, "previousRun", "p", "", "")
+	pflag.StringVarP(&previousRun, "previous-run", "p", "", "")
 	pflag.Parse()
 	prArgs := pflag.Args()
 
@@ -208,12 +208,13 @@ func run(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+
+		// Install existing artifacts into benchSuites.
 		oldSuite.artDir = testArtifactsDir(oldSuite.ref)
 		oldSuite.outFile, err = os.Open(oldSuite.getOutputFile(t))
 		if err != nil {
 			return err
 		}
-
 		newSuite.artDir = testArtifactsDir(newSuite.ref)
 		newSuite.outFile, err = os.Open(newSuite.getOutputFile(t))
 		if err != nil {
@@ -371,16 +372,12 @@ func processBenchOutput(
 	var c benchstat.Collection
 	c.Alpha = 0.05
 	c.Order = benchstat.Reverse(benchstat.ByDelta) // best, first
-	err := c.AddFile("old", oldSuite.outFile)
-	if err != nil {
+	if err := c.AddFile("old", oldSuite.outFile); err != nil {
 		return nil, err
 	}
-
-	err = c.AddFile("new", newSuite.outFile)
-	if err != nil {
+	if err := c.AddFile("new", newSuite.outFile); err != nil {
 		return nil, err
 	}
-
 	tables := c.Tables()
 
 	// Output the results.

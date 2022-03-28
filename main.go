@@ -55,6 +55,7 @@ Options:
       --html               output the results in an HTML table
       --sheets             output the results to a new Google Sheets document
       --help               display this help
+  -p, --previousRun <time> time of previous run; skip running benches and just (re)process previous run
 
 Example invocations:
   $ benchdiff --sheets ./pkg/...
@@ -112,6 +113,8 @@ const (
 	sheets
 )
 
+const timeFormat = "2006-01-02T15_04_05Z07:00"
+
 func main() {
 	if err := run(context.Background()); err != nil {
 		fmt.Fprintf(os.Stderr, "fatal: %s\n", err)
@@ -121,7 +124,7 @@ func main() {
 
 func run(ctx context.Context) error {
 	var help, outCSV, outHTML, outSheets bool
-	var oldRef, newRef, postChck, runPattern string
+	var oldRef, newRef, postChck, runPattern, previousRun string
 	var itersPerTest int
 	var threshold float64
 
@@ -136,13 +139,14 @@ func run(ctx context.Context) error {
 	pflag.StringVarP(&runPattern, "run", "r", ".", "")
 	pflag.IntVarP(&itersPerTest, "count", "c", 10, "")
 	pflag.Float64VarP(&threshold, "threshold", "t", -1, "")
+	pflag.StringVarP(&previousRun, "previousRun", "p", "", "")
 	pflag.Parse()
 	prArgs := pflag.Args()
 
 	if help {
 		return runHelp(ctx)
 	}
-	if len(prArgs) == 0 {
+	if len(prArgs) == 0 && previousRun == "" {
 		return runHelp(ctx)
 	}
 	pkgFilter := prArgs
@@ -186,17 +190,38 @@ func run(ctx context.Context) error {
 	newSuite := makeBenchSuite(newRef)
 	defer oldSuite.close()
 	defer newSuite.close()
-	if err := buildBenches(ctx, pkgFilter, postChck, &oldSuite, &newSuite); err != nil {
-		return err
-	}
 
-	// Run the benchmarks.
-	tests := oldSuite.intersectTests(&newSuite)
-	err = runCmpBenches(ctx, &oldSuite, &newSuite, tests.sorted(), runPattern, itersPerTest)
-	if err != nil {
-		return err
-	}
+	if previousRun == "" {
+		if err := buildBenches(ctx, pkgFilter, postChck, &oldSuite, &newSuite); err != nil {
+			return err
+		}
 
+		// Run the benchmarks.
+		tests := oldSuite.intersectTests(&newSuite)
+		err = runCmpBenches(ctx, &oldSuite, &newSuite, tests.sorted(), runPattern, itersPerTest)
+		if err != nil {
+			return err
+		}
+	} else {
+		// Find output files for the given run.
+		t, err := time.Parse(timeFormat, previousRun)
+		if err != nil {
+			return err
+		}
+		oldSuite.artDir = testArtifactsDir(oldSuite.ref)
+		oldSuite.outFile, err = os.Open(oldSuite.getOutputFile(t))
+		if err != nil {
+			return err
+		}
+
+		newSuite.artDir = testArtifactsDir(newSuite.ref)
+		newSuite.outFile, err = os.Open(newSuite.getOutputFile(t))
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintf(os.Stderr, "Found previous run; old=%s, new=%s\n", oldSuite.outFile.Name(), newSuite.outFile.Name())
+	}
 	// Process the benchmark output.
 	res, err := processBenchOutput(ctx, &oldSuite, &newSuite, out, pkgFilter, srv)
 	if err != nil {
@@ -346,8 +371,16 @@ func processBenchOutput(
 	var c benchstat.Collection
 	c.Alpha = 0.05
 	c.Order = benchstat.Reverse(benchstat.ByDelta) // best, first
-	c.AddFile("old", oldSuite.outFile)
-	c.AddFile("new", newSuite.outFile)
+	err := c.AddFile("old", oldSuite.outFile)
+	if err != nil {
+		return nil, err
+	}
+
+	err = c.AddFile("new", newSuite.outFile)
+	if err != nil {
+		return nil, err
+	}
+
 	tables := c.Tables()
 
 	// Output the results.
@@ -492,7 +525,6 @@ func (bs *benchSuite) close() {
 }
 
 func (bs *benchSuite) getOutputFile(t time.Time) string {
-	const timeFormat = "2006-01-02T15_04_05Z07:00"
 	return filepath.Join(bs.artDir, "out."+t.Format(timeFormat))
 }
 

@@ -48,6 +48,10 @@ Options:
   -o, --old       <commit>  measure the difference between this commit and new (default new~)
   -r, --run       <regexp>  run only benchmarks matching regexp
   -c, --count     <n>       run tests and benchmarks n times (default 10)
+  -d  --benchtime <d>       run each benchmark for duration d (default 1s)
+      --cpuprofile          record and write cpu profiles
+      --memprofile          record and write allocation profiles
+      --mutexprofile        record and write mutex contention profiles
   -t, --threshold <n>       exit with code 0 if all regressions are below threshold, else 1
   -p, --previous-run <time> time of previous run; skip running benches and just (re)process previous run
       --post-checkout       an optional command to run after checking out each branch to
@@ -124,8 +128,9 @@ func main() {
 
 func run(ctx context.Context) error {
 	var help, outCSV, outHTML, outSheets bool
-	var oldRef, newRef, postChck, runPattern, previousRun string
+	var oldRef, newRef, postChck, runPattern, benchTime, previousRun string
 	var itersPerTest int
+	var cpuProfile, memProfile, mutexProfile bool
 	var threshold float64
 
 	pflag.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
@@ -138,6 +143,10 @@ func run(ctx context.Context) error {
 	pflag.StringVarP(&postChck, "post-checkout", "", "", "")
 	pflag.StringVarP(&runPattern, "run", "r", ".", "")
 	pflag.IntVarP(&itersPerTest, "count", "c", 10, "")
+	pflag.StringVarP(&benchTime, "benchtime", "d", "", "")
+	pflag.BoolVarP(&cpuProfile, "cpuprofile", "", false, "")
+	pflag.BoolVarP(&memProfile, "memprofile", "", false, "")
+	pflag.BoolVarP(&mutexProfile, "mutexprofile", "", false, "")
 	pflag.Float64VarP(&threshold, "threshold", "t", -1, "")
 	pflag.StringVarP(&previousRun, "previous-run", "p", "", "")
 	pflag.Parse()
@@ -198,7 +207,10 @@ func run(ctx context.Context) error {
 
 		// Run the benchmarks.
 		tests := oldSuite.intersectTests(&newSuite)
-		err = runCmpBenches(ctx, &oldSuite, &newSuite, tests.sorted(), runPattern, itersPerTest)
+		err = runCmpBenches(
+			ctx, &oldSuite, &newSuite, tests.sorted(), runPattern,
+			benchTime, cpuProfile, memProfile, mutexProfile, itersPerTest,
+		)
 		if err != nil {
 			return err
 		}
@@ -228,6 +240,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	logProfileLocations(&oldSuite, &newSuite, cpuProfile, memProfile, mutexProfile)
 
 	// Determine whether any tests exceeded the allowable regression threshold.
 	return checkPassing(threshold, res)
@@ -298,7 +311,12 @@ func buildBenches(ctx context.Context, pkgFilter []string, postChck string, bss 
 }
 
 func runCmpBenches(
-	ctx context.Context, bs1, bs2 *benchSuite, tests []string, runPattern string, itersPerTest int,
+	ctx context.Context,
+	bs1, bs2 *benchSuite,
+	tests []string,
+	runPattern, benchTime string,
+	cpuProfile, memProfile, mutexProfile bool,
+	itersPerTest int,
 ) error {
 	fmt.Fprintf(os.Stderr, "\nrunning benchmarks:")
 	var spinner ui.Spinner
@@ -315,10 +333,10 @@ func runCmpBenches(
 			// Interleave test suite runs instead of using -count=itersPerTest. The
 			// idea is that this reduces the chance that we pick up external noise
 			// with a time correlation.
-			if err := runSingleBench(bs1, t, runPattern); err != nil {
+			if err := runSingleBench(bs1, t, runPattern, benchTime, cpuProfile, memProfile, mutexProfile); err != nil {
 				return err
 			}
-			if err := runSingleBench(bs2, t, runPattern); err != nil {
+			if err := runSingleBench(bs2, t, runPattern, benchTime, cpuProfile, memProfile, mutexProfile); err != nil {
 				return err
 			}
 		}
@@ -327,7 +345,9 @@ func runCmpBenches(
 	return nil
 }
 
-func runSingleBench(bs *benchSuite, test, runPattern string) error {
+func runSingleBench(
+	bs *benchSuite, test, runPattern, benchTime string, cpuProfile, memProfile, mutexProfile bool,
+) error {
 	bin := bs.getTestBinary(test)
 
 	// Determine whether the binary has a --logtostderr flag. Use CombinedOutput
@@ -339,6 +359,19 @@ func runSingleBench(bs *benchSuite, test, runPattern string) error {
 
 	// Run the benchmark binary.
 	args := []string{bin, "-test.run", "-", "-test.bench", runPattern, "-test.benchmem"}
+	if benchTime != "" {
+		args = append(args, "-test.benchtime", benchTime)
+	}
+	if cpuProfile {
+		args = append(args, "-test.cpuprofile", bs.getCpuProfileFile())
+	}
+	if memProfile {
+		// TODO(nvanbenschoten): consider passing -test.memprofilerate=1.
+		args = append(args, "-test.memprofile", bs.getMemProfileFile())
+	}
+	if mutexProfile {
+		args = append(args, "-test.mutexprofile", bs.getMutexProfileFile())
+	}
 	if hasLogToStderr {
 		args = append(args, "--logtostderr", "NONE")
 	}
@@ -408,6 +441,24 @@ func processBenchOutput(
 		panic("unexpected")
 	}
 	return tables, nil
+}
+
+func logProfileLocations(
+	bs1, bs2 *benchSuite, cpuProfile, memProfile, mutexProfile bool,
+) {
+	log := func(profType string) {
+		fmt.Printf("\nwrote %s profiles to:\n  old=%s\n  new=%s\n",
+			profType, bs1.getProfileFile(profType), bs2.getProfileFile(profType))
+	}
+	if cpuProfile {
+		log("cpu")
+	}
+	if memProfile {
+		log("cpu")
+	}
+	if mutexProfile {
+		log("mutex")
+	}
 }
 
 func checkPassing(thresh float64, tables []*benchstat.Table) error {
@@ -523,6 +574,14 @@ func (bs *benchSuite) close() {
 
 func (bs *benchSuite) getOutputFile(t time.Time) string {
 	return filepath.Join(bs.artDir, "out."+t.Format(timeFormat))
+}
+
+func (bs *benchSuite) getCpuProfileFile() string   { return bs.getProfileFile("cpu") }
+func (bs *benchSuite) getMemProfileFile() string   { return bs.getProfileFile("mem") }
+func (bs *benchSuite) getMutexProfileFile() string { return bs.getProfileFile("mutex") }
+
+func (bs *benchSuite) getProfileFile(profType string) string {
+	return filepath.Join(bs.artDir, profType+".prof")
 }
 
 func (bs *benchSuite) getTestBinary(bin string) string {

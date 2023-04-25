@@ -454,7 +454,7 @@ func logProfileLocations(
 		log("cpu")
 	}
 	if memProfile {
-		log("cpu")
+		log("mem")
 	}
 	if mutexProfile {
 		log("mutex")

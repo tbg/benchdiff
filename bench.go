@@ -67,12 +67,17 @@ func testBinToPkg(bin string) string {
 
 // buildTestBin builds a test binary for the specified package and moves it to
 // the destination directory if successful.
-func buildTestBin(pkg, dst string) (string, bool, error) {
+func buildTestBin(pkg, dst string, useBazel bool) (string, bool, error) {
 	dstFile := pkgToTestBin(pkg)
-	// Capture to silence warnings from pkgs with no test files.
-	if _, err := capture("go", "test", "-c", "-o", dstFile, pkg); err != nil {
-		return "", false, errors.Wrap(err, "building test binary")
+	if !useBazel {
+		// Capture to silence warnings from pkgs with no test files.
+		if _, err := capture("go", "test", "-c", "-o", dstFile, pkg); err != nil {
+			return "", false, errors.Wrap(err, "building test binary")
+		}
+	} else {
+		// TODO!
 	}
+
 	// If there were no tests in the package, no file will have been created.
 	if _, err := os.Stat(dstFile); err != nil {
 		if os.IsNotExist(err) {

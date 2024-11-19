@@ -56,6 +56,7 @@ Options:
   -p, --previous-run <time> time of previous run; skip running benches and just (re)process previous run
       --post-checkout       an optional command to run after checking out each branch to
                             configure the git repo so that 'go build' succeeds
+  -b  --bazel               build the test binaries with bazel
       --csv                 output the results in a csv format
       --html                output the results in an HTML table
       --sheets              output the results to a new Google Sheets document
@@ -132,12 +133,14 @@ func run(ctx context.Context) error {
 	var itersPerTest int
 	var cpuProfile, memProfile, mutexProfile bool
 	var threshold float64
+	var useBazel bool
 
 	pflag.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
 	pflag.BoolVarP(&help, "help", "h", false, "")
 	pflag.BoolVarP(&outCSV, "csv", "", false, "")
 	pflag.BoolVarP(&outHTML, "html", "", false, "")
 	pflag.BoolVarP(&outSheets, "sheets", "", false, "")
+	pflag.BoolVarP(&useBazel, "bazel", "b", false, "")
 	pflag.StringVarP(&oldRef, "old", "o", "", "")
 	pflag.StringVarP(&newRef, "new", "n", "", "")
 	pflag.StringVarP(&postChck, "post-checkout", "", "", "")
@@ -195,8 +198,8 @@ func run(ctx context.Context) error {
 	}
 
 	// Build the benchmark suites.
-	oldSuite := makeBenchSuite(oldRef)
-	newSuite := makeBenchSuite(newRef)
+	oldSuite := makeBenchSuite(oldRef, useBazel)
+	newSuite := makeBenchSuite(newRef, useBazel)
 	defer oldSuite.close()
 	defer newSuite.close()
 
@@ -484,14 +487,16 @@ type benchSuite struct {
 	artDir    string
 	outFile   *os.File
 	binDir    string
+	useBazel  bool
 	testFiles fileSet
 }
 type fileSet map[string]struct{}
 
-func makeBenchSuite(ref string) benchSuite {
+func makeBenchSuite(ref string, useBazel bool) benchSuite {
 	return benchSuite{
 		ref:       ref,
 		testFiles: make(fileSet),
+		useBazel:  useBazel,
 	}
 }
 
@@ -554,12 +559,11 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 	}
 
 	var spinner ui.Spinner
-	spinner.Start(os.Stderr, fmt.Sprintf("building benchmark binaries for '%s'", bs.ref))
+	spinner.Start(os.Stderr, fmt.Sprintf("building benchmark binaries for '%s' [bazel=%t]", bs.ref, bs.useBazel))
 	defer spinner.Stop()
 	for i, pkg := range pkgs {
 		spinner.Update(ui.Fraction(i, len(pkgs)))
-		const useBazel = false
-		if testBin, ok, err := buildTestBin(pkg, bs.binDir, useBazel); err != nil {
+		if testBin, ok, err := buildTestBin(pkg, bs.binDir, bs.useBazel); err != nil {
 			return err
 		} else if ok {
 			bs.testFiles[testBin] = struct{}{}

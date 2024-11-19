@@ -68,24 +68,36 @@ func testBinToPkg(bin string) string {
 // buildTestBin builds a test binary for the specified package and moves it to
 // the destination directory if successful.
 func buildTestBin(pkg, dst string, useBazel bool) (string, bool, error) {
-	dstFile := pkgToTestBin(pkg)
+	dstFile := pkgToTestBin(pkg) // cockroachdb_cockroach_pkg_util_log
+	var srcFile string
 	if !useBazel {
+		srcFile = dstFile
 		// Capture to silence warnings from pkgs with no test files.
 		if _, err := capture("go", "test", "-c", "-o", dstFile, pkg); err != nil {
 			return "", false, errors.Wrap(err, "building test binary")
 		}
 	} else {
-		// TODO!
+		relPkg := strings.TrimPrefix(pkg, "github.com/cockroachdb/cockroach/")
+		pathList := strings.Split(relPkg, string(filepath.Separator)) // ['pkg','util','log']
+		last := pathList[len(pathList)-1]                             // 'log'
+		// `bazel build //pkg/util/log:log_test`.
+		if _, err := capture("bazel", "build", "//"+relPkg+":"+last+"_test"); err != nil {
+			return "", false, errors.Wrap(err, "building test binary")
+		}
+		// `_bazel/bin/pkg/util/log/log_test_/log_test`.
+		out := append([]string{"_bazel", "bin"}, pathList...)
+		out = append(out, last+"_test_", last+"_test")
+		srcFile = filepath.Join(out...)
 	}
 
 	// If there were no tests in the package, no file will have been created.
-	if _, err := os.Stat(dstFile); err != nil {
+	if _, err := os.Stat(srcFile); err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil
 		}
 		return "", false, errors.Wrap(err, "looking for test binary")
 	}
-	if err := spawn("mv", dstFile, dst); err != nil {
+	if err := spawn("mv", srcFile, filepath.Join(dst, dstFile)); err != nil {
 		return "", false, errors.Wrap(err, "moving test binary")
 	}
 	return dstFile, true, nil

@@ -68,20 +68,20 @@ func testBinToPkg(bin string) string {
 // buildTestBin builds a test binary for the specified package and moves it to
 // the destination directory if successful.
 func buildTestBin(pkg, dst string) (string, bool, error) {
-	f := pkgToTestBin(pkg)
+	dstFile := pkgToTestBin(pkg)
 	// Capture to silence warnings from pkgs with no test files.
-	if _, err := capture("go", "test", "-c", "-o", f, pkg); err != nil {
+	if _, err := capture("go", "test", "-c", "-o", dstFile, pkg); err != nil {
 		return "", false, errors.Wrap(err, "building test binary")
 	}
 	// If there were no tests in the package, no file will have been created.
-	if _, err := os.Stat(f); err != nil {
+	if _, err := os.Stat(dstFile); err != nil {
 		if os.IsNotExist(err) {
 			return "", false, nil
 		}
 		return "", false, errors.Wrap(err, "looking for test binary")
 	}
-	if err := spawn("mv", f, dst); err != nil {
+	if err := spawn("mv", dstFile, dst); err != nil {
 		return "", false, errors.Wrap(err, "moving test binary")
 	}
-	return f, true, nil
+	return dstFile, true, nil
 }

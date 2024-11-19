@@ -46,6 +46,7 @@ environment variable. See https://cloud.google.com/docs/authentication/productio
 Options:
   -n, --new       <commit>  measure the difference between this commit and old (default HEAD)
   -o, --old       <commit>  measure the difference between this commit and new (default new~)
+                            'lastmerge' selects the most recent merge commit.
   -r, --run       <regexp>  run only benchmarks matching regexp
   -c, --count     <n>       run tests and benchmarks n times (default 10)
   -d  --benchtime <d>       run each benchmark for duration d (default 1s)
@@ -278,6 +279,8 @@ func parseGitRefs(oldRef, newRef string) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
+	} else if oldRef == "lastmerge" {
+		oldRef, err = capture("git", "log", "-n", "1", "--merges", "--format=%H", newRef)
 	} else {
 		oldRef, err = getRefAsSHA(oldRef)
 		if err != nil {

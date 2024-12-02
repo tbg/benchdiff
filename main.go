@@ -58,6 +58,7 @@ Options:
       --post-checkout       an optional command to run after checking out each branch to
                             configure the git repo so that 'go build' succeeds
   -b  --bazel               build the test binaries with bazel
+  -s  --sort      <order>   sort output by 'delta' (largest first) or 'name'
       --csv                 output the results in a csv format
       --html                output the results in an HTML table
       --sheets              output the results to a new Google Sheets document
@@ -130,7 +131,7 @@ func main() {
 
 func run(ctx context.Context) error {
 	var help, outCSV, outHTML, outSheets bool
-	var oldRef, newRef, postChck, runPattern, benchTime, previousRun string
+	var oldRef, newRef, order, postChck, runPattern, benchTime, previousRun string
 	var itersPerTest int
 	var cpuProfile, memProfile, mutexProfile bool
 	var threshold float64
@@ -144,6 +145,7 @@ func run(ctx context.Context) error {
 	pflag.BoolVarP(&useBazel, "bazel", "b", false, "")
 	pflag.StringVarP(&oldRef, "old", "o", "", "")
 	pflag.StringVarP(&newRef, "new", "n", "", "")
+	pflag.StringVarP(&order, "sort", "s", "delta", "")
 	pflag.StringVarP(&postChck, "post-checkout", "", "", "")
 	pflag.StringVarP(&runPattern, "run", "r", ".", "")
 	pflag.IntVarP(&itersPerTest, "count", "c", 10, "")
@@ -248,7 +250,7 @@ func run(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "Found previous run; old=%s, new=%s\n", oldSuite.outFile.Name(), newSuite.outFile.Name())
 	}
 	// Process the benchmark output.
-	res, err := processBenchOutput(ctx, &oldSuite, &newSuite, out, pkgFilter, srv)
+	res, err := processBenchOutput(ctx, &oldSuite, &newSuite, order == "name", out, pkgFilter, srv)
 	if err != nil {
 		return err
 	}
@@ -407,6 +409,7 @@ func runSingleBench(
 func processBenchOutput(
 	ctx context.Context,
 	oldSuite, newSuite *benchSuite,
+	byName bool, // instead of by delta reversed
 	out outputFmt,
 	pkgFilter []string,
 	srv *google.Service,
@@ -418,7 +421,11 @@ func processBenchOutput(
 	// Compute the benchmark comparison results.
 	var c benchstat.Collection
 	c.Alpha = 0.05
-	c.Order = benchstat.Reverse(benchstat.ByDelta) // best, first
+	if byName {
+		c.Order = benchstat.ByName
+	} else {
+		c.Order = benchstat.Reverse(benchstat.ByDelta) // best, first
+	}
 	if err := c.AddFile("old", oldSuite.outFile); err != nil {
 		return nil, err
 	}

@@ -197,10 +197,18 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	oldSubject, err := subjectForRef(oldRef)
+	if err != nil {
+		return err
+	}
+	newSubject, err := subjectForRef(newRef)
+	if err != nil {
+		return err
+	}
 
 	// Build the benchmark suites.
-	oldSuite := makeBenchSuite(oldRef, useBazel)
-	newSuite := makeBenchSuite(newRef, useBazel)
+	oldSuite := makeBenchSuite(oldRef, oldSubject, useBazel)
+	newSuite := makeBenchSuite(newRef, newSubject, useBazel)
 	defer oldSuite.close()
 	defer newSuite.close()
 
@@ -487,6 +495,7 @@ func checkPassing(thresh float64, tables []*benchstat.Table) error {
 
 type benchSuite struct {
 	ref       string
+	subject   string // commit subject
 	artDir    string
 	outFile   *os.File
 	binDir    string
@@ -495,9 +504,10 @@ type benchSuite struct {
 }
 type fileSet map[string]struct{}
 
-func makeBenchSuite(ref string, useBazel bool) benchSuite {
+func makeBenchSuite(ref string, subject string, useBazel bool) benchSuite {
 	return benchSuite{
 		ref:       ref,
+		subject:   subject,
 		testFiles: make(fileSet),
 		useBazel:  useBazel,
 	}
@@ -524,7 +534,7 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 	// Create the binary directory: ./benchdiff/<ref>/bin/<hash(pkgFilter)>
 	bs.binDir = testBinDir(bs.ref, pkgFilter)
 	if _, err = os.Stat(bs.binDir); err == nil {
-		fmt.Fprintf(os.Stderr, "test binaries already exist for '%s'; skipping build\n", bs.ref)
+		fmt.Fprintf(os.Stderr, "test binaries already exist for %s: %.50s\n", bs.ref, bs.subject)
 		files, err := ioutil.ReadDir(bs.binDir)
 		if err != nil {
 			return err
@@ -562,7 +572,8 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 	}
 
 	var spinner ui.Spinner
-	spinner.Start(os.Stderr, fmt.Sprintf("building benchmark binaries for '%s' [bazel=%t]", bs.ref, bs.useBazel))
+	spinner.Start(os.Stderr, fmt.Sprintf("building benchmark binaries for %s: %.50s [bazel=%t]", bs.ref,
+		bs.subject, bs.useBazel))
 	defer spinner.Stop()
 	for i, pkg := range pkgs {
 		spinner.Update(ui.Fraction(i, len(pkgs)))

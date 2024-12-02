@@ -95,3 +95,7 @@ func checkoutRef(ref string, postCheckout string) error {
 	err := spawnWith(os.Stdin, os.Stderr, os.Stderr, args...)
 	return errors.Wrap(err, "post-checkout")
 }
+
+func subjectForRef(ref string) (string, error) {
+	return capture("git", "log", "--format=%s", "-1", ref)
+}

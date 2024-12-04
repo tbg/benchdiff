@@ -46,6 +46,7 @@ environment variable. See https://cloud.google.com/docs/authentication/productio
 Options:
   -n, --new       <commit>  measure the difference between this commit and old (default HEAD)
   -o, --old       <commit>  measure the difference between this commit and new (default new~)
+                            'lastmerge' selects the most recent merge commit.
   -r, --run       <regexp>  run only benchmarks matching regexp
   -c, --count     <n>       run tests and benchmarks n times (default 10)
   -d  --benchtime <d>       run each benchmark for duration d (default 1s)
@@ -56,6 +57,8 @@ Options:
   -p, --previous-run <time> time of previous run; skip running benches and just (re)process previous run
       --post-checkout       an optional command to run after checking out each branch to
                             configure the git repo so that 'go build' succeeds
+  -b  --bazel               build the test binaries with bazel
+  -s  --sort      <order>   sort output by 'delta' (largest first) or 'name'
       --csv                 output the results in a csv format
       --html                output the results in an HTML table
       --sheets              output the results to a new Google Sheets document
@@ -128,18 +131,21 @@ func main() {
 
 func run(ctx context.Context) error {
 	var help, outCSV, outHTML, outSheets bool
-	var oldRef, newRef, postChck, runPattern, benchTime, previousRun string
+	var oldRef, newRef, order, postChck, runPattern, benchTime, previousRun string
 	var itersPerTest int
 	var cpuProfile, memProfile, mutexProfile bool
 	var threshold float64
+	var useBazel bool
 
 	pflag.Usage = func() { fmt.Fprintln(os.Stderr, usage) }
 	pflag.BoolVarP(&help, "help", "h", false, "")
 	pflag.BoolVarP(&outCSV, "csv", "", false, "")
 	pflag.BoolVarP(&outHTML, "html", "", false, "")
 	pflag.BoolVarP(&outSheets, "sheets", "", false, "")
+	pflag.BoolVarP(&useBazel, "bazel", "b", false, "")
 	pflag.StringVarP(&oldRef, "old", "o", "", "")
 	pflag.StringVarP(&newRef, "new", "n", "", "")
+	pflag.StringVarP(&order, "sort", "s", "delta", "")
 	pflag.StringVarP(&postChck, "post-checkout", "", "", "")
 	pflag.StringVarP(&runPattern, "run", "r", ".", "")
 	pflag.IntVarP(&itersPerTest, "count", "c", 10, "")
@@ -193,10 +199,18 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	oldSubject, err := subjectForRef(oldRef)
+	if err != nil {
+		return err
+	}
+	newSubject, err := subjectForRef(newRef)
+	if err != nil {
+		return err
+	}
 
 	// Build the benchmark suites.
-	oldSuite := makeBenchSuite(oldRef)
-	newSuite := makeBenchSuite(newRef)
+	oldSuite := makeBenchSuite(oldRef, oldSubject, useBazel)
+	newSuite := makeBenchSuite(newRef, newSubject, useBazel)
 	defer oldSuite.close()
 	defer newSuite.close()
 
@@ -236,7 +250,7 @@ func run(ctx context.Context) error {
 		fmt.Fprintf(os.Stderr, "Found previous run; old=%s, new=%s\n", oldSuite.outFile.Name(), newSuite.outFile.Name())
 	}
 	// Process the benchmark output.
-	res, err := processBenchOutput(ctx, &oldSuite, &newSuite, out, pkgFilter, srv)
+	res, err := processBenchOutput(ctx, &oldSuite, &newSuite, order == "name", out, pkgFilter, srv)
 	if err != nil {
 		return err
 	}
@@ -278,6 +292,8 @@ func parseGitRefs(oldRef, newRef string) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
+	} else if oldRef == "lastmerge" {
+		oldRef, err = capture("git", "log", "-n", "1", "--merges", "--format=%H", newRef)
 	} else {
 		oldRef, err = getRefAsSHA(oldRef)
 		if err != nil {
@@ -393,6 +409,7 @@ func runSingleBench(
 func processBenchOutput(
 	ctx context.Context,
 	oldSuite, newSuite *benchSuite,
+	byName bool, // instead of by delta reversed
 	out outputFmt,
 	pkgFilter []string,
 	srv *google.Service,
@@ -404,7 +421,11 @@ func processBenchOutput(
 	// Compute the benchmark comparison results.
 	var c benchstat.Collection
 	c.Alpha = 0.05
-	c.Order = benchstat.Reverse(benchstat.ByDelta) // best, first
+	if byName {
+		c.Order = benchstat.ByName
+	} else {
+		c.Order = benchstat.Reverse(benchstat.ByDelta) // best, first
+	}
 	if err := c.AddFile("old", oldSuite.outFile); err != nil {
 		return nil, err
 	}
@@ -481,17 +502,21 @@ func checkPassing(thresh float64, tables []*benchstat.Table) error {
 
 type benchSuite struct {
 	ref       string
+	subject   string // commit subject
 	artDir    string
 	outFile   *os.File
 	binDir    string
+	useBazel  bool
 	testFiles fileSet
 }
 type fileSet map[string]struct{}
 
-func makeBenchSuite(ref string) benchSuite {
+func makeBenchSuite(ref string, subject string, useBazel bool) benchSuite {
 	return benchSuite{
 		ref:       ref,
+		subject:   subject,
 		testFiles: make(fileSet),
+		useBazel:  useBazel,
 	}
 }
 
@@ -516,7 +541,7 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 	// Create the binary directory: ./benchdiff/<ref>/bin/<hash(pkgFilter)>
 	bs.binDir = testBinDir(bs.ref, pkgFilter)
 	if _, err = os.Stat(bs.binDir); err == nil {
-		fmt.Fprintf(os.Stderr, "test binaries already exist for '%s'; skipping build\n", bs.ref)
+		fmt.Fprintf(os.Stderr, "test binaries already exist for %s: %.50s\n", bs.ref, bs.subject)
 		files, err := ioutil.ReadDir(bs.binDir)
 		if err != nil {
 			return err
@@ -554,11 +579,12 @@ func (bs *benchSuite) build(pkgFilter []string, postChck string, t time.Time) (e
 	}
 
 	var spinner ui.Spinner
-	spinner.Start(os.Stderr, fmt.Sprintf("building benchmark binaries for '%s'", bs.ref))
+	spinner.Start(os.Stderr, fmt.Sprintf("building benchmark binaries for %s: %.50s [bazel=%t]", bs.ref,
+		bs.subject, bs.useBazel))
 	defer spinner.Stop()
 	for i, pkg := range pkgs {
 		spinner.Update(ui.Fraction(i, len(pkgs)))
-		if testBin, ok, err := buildTestBin(pkg, bs.binDir); err != nil {
+		if testBin, ok, err := buildTestBin(pkg, bs.binDir, bs.useBazel); err != nil {
 			return err
 		} else if ok {
 			bs.testFiles[testBin] = struct{}{}
